@@ -1,0 +1,4 @@
+#pattern  filter=crypt diff=crypt merge=crypt
+parameters.yml  filter=crypt diff=crypt merge=crypt
+es_stream_depletion_details.csv  filter=crypt diff=crypt merge=crypt
+es_water_permits_current.csv  filter=crypt diff=crypt merge=crypt
