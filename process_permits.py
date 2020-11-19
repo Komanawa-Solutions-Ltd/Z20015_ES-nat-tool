@@ -20,16 +20,16 @@ pd.options.display.max_columns = 10
 
 base_path = os.path.realpath(os.path.dirname(__file__))
 
-permit_csv = os.path.join(base_path, 'es_water_permits_current.csv')
+permit_csv = os.path.join(base_path, 'es_water_permit_data_v02.csv')
 sd_csv = os.path.join(base_path, 'es_stream_depletion_details.csv')
 
-with open(os.path.join(base_path, 'parameters.yml')) as param:
+with open(os.path.join(base_path, 'parameters-permits.yml')) as param:
     param = yaml.safe_load(param)
 
 conn_config = param['remote']['connection_config']
 bucket = param['remote']['bucket']
 
-base_key = 'rma_permits/{name}.csv'
+base_key = 'es/{name}.csv'
 
 run_date = pd.Timestamp.today(tz='utc').round('s')
 # run_date_local = run_date.tz_convert(ts_local_tz).tz_localize(None).strftime('%Y-%m-%d %H:%M:%S')
@@ -60,14 +60,16 @@ permit1 = pd.read_csv(permit_csv)
 
 permit2 = permit1[['AuthIRISID', 'CurrentStatus', 'CommencementDate', 'ExpiryDate', 'SubType', 'PrimaryIndustry', 'AuthExercised', 'AbstractionSiteName', 'IRISNorthing', 'IRISEasting', 'MaxAuthVol_LperSec', 'MaxVolm3perday', 'MaxVolm3peryear']].copy()
 
-permit2.rename(columns={'AuthIRISID': 'permit_id', 'CurrentStatus': 'permit_status', 'CommencementDate': 'start_date', 'ExpiryDate': 'end_date', 'SubType': 'activity', 'PrimaryIndustry': 'use_type', 'AuthExercised': 'exercised', 'MaxAuthVol_LperSec': 'max_rate', 'MaxVolm3perday': 'max_daily_volume', 'MaxVolm3peryear': 'max_annual_volume'}, inplace=True)
+permit2.rename(columns={'AuthIRISID': 'permit_id', 'CurrentStatus': 'permit_status', 'CommencementDate': 'from_date', 'ExpiryDate': 'to_date', 'SubType': 'activity', 'PrimaryIndustry': 'use_type', 'AuthExercised': 'exercised', 'MaxAuthVol_LperSec': 'max_rate', 'MaxVolm3perday': 'max_daily_volume', 'MaxVolm3peryear': 'max_annual_volume'}, inplace=True)
 
-permit2['use_type'] = permit2['use_type'].replace(use_type_mapping)
+# permit2 = permit2[permit2.max_rate.notnull()].copy()
+
+# permit2['use_type'] = permit2['use_type'].replace(use_type_mapping)
 
 permit2['permit_id'] = permit2['permit_id'].apply(lambda x: x.split('AUTH-')[1]).str.strip()
 
-permit2['start_date'] = pd.to_datetime(permit2['start_date'])
-permit2['end_date'] = pd.to_datetime(permit2['end_date'])
+permit2['from_date'] = pd.to_datetime(permit2['from_date'])
+permit2['to_date'] = pd.to_datetime(permit2['to_date'])
 
 activity1 = permit2.activity.str.split('(')
 consump1 = activity1.apply(lambda x: x[1].split(')')[0].strip())
@@ -90,7 +92,14 @@ permit3 = permit2.dropna(subset=limit_cols, how='all').dropna(subset=['Abstracti
 
 permit4 = permit3.drop(['AbstractionSiteName', 'IRISNorthing', 'IRISEasting'], axis=1)
 
-# permit4 = permit3.dropna(subset=['station_name'])
+grp1 = permit4.groupby(['permit_id', 'hydro_group'])
+
+limits_max = grp1[limit_cols].max()
+others = grp1[['permit_status', 'from_date', 'to_date', 'activity', 'use_type', 'exercised', 'consumptive']].first()
+
+permit5 = pd.concat([others, limits_max], axis=1).reset_index()
+
+# permit4 = permit3.dropna(subset=['wap_name'])
 
 
 ### Stations
@@ -114,8 +123,8 @@ sites_list = []
 for i, row in permit3.iterrows():
     sites_list.extend(split_sites(row.permit_id, row.AbstractionSiteName, row.IRISNorthing, row.IRISEasting))
 
-sites_df = pd.DataFrame(sites_list, columns=['permit_id', 'station', 'NZTMY', 'NZTMX'])
-sites_df1 = sites_df[sites_df.station.str.contains('[A-Z]+\d*/\d+')].copy()
+sites_df = pd.DataFrame(sites_list, columns=['permit_id', 'wap', 'NZTMY', 'NZTMX'])
+sites_df1 = sites_df[sites_df.wap.str.contains('[A-Z]+\d*/\d+')].groupby(['permit_id', 'wap']).first().copy()
 
 ## Convert to lat and lon
 from_crs = 2193
@@ -130,34 +139,35 @@ sites_df1['lat'] = points[0].round(5)
 
 ## Add altitude
 
-k_key = param['source']['koordinates_key']
+# k_key = param['source']['koordinates_key']
+#
+# sites_u = sites_df1[['wap', 'lon', 'lat']].drop_duplicates(subset=['wap'])
+#
+# alt1 = sites_u.apply(lambda x: tu.altitude_io.koordinates_raster_query('https://data.linz.govt.nz', k_key, '51768', x.lon, x.lat), axis=1)
+# alt2 = []
+# for a in alt1:
+#     try:
+#         alt2.extend([round(a[0]['value'], 3)])
+#     except:
+#         print('No altitude found, using -9999')
+#         alt2.extend([-9999])
+#
+# sites_u['altitude'] = alt2
 
-sites_u = sites_df1[['station', 'lon', 'lat']].drop_duplicates(subset=['station'])
-
-alt1 = sites_u.apply(lambda x: tu.altitude_io.koordinates_raster_query('https://data.linz.govt.nz', k_key, '51768', x.lon, x.lat), axis=1)
-alt2 = []
-for a in alt1:
-    try:
-        alt2.extend([round(a[0]['value'], 3)])
-    except:
-        print('No altitude found, using -9999')
-        alt2.extend([-9999])
-
-sites_u['altitude'] = alt2
-
-sites_df2 = pd.merge(sites_df1.drop(['NZTMX', 'NZTMY', 'lat', 'lon'], axis=1), sites_u, on='station')
+# sites_df2 = pd.merge(sites_df1.drop(['NZTMX', 'NZTMY', 'lat', 'lon'], axis=1), sites_u, on='wap')
+sites_df2 = sites_df1.drop(['NZTMX', 'NZTMY'], axis=1).reset_index()
 
 ### SD file
 
 sd1 = pd.read_csv(sd_csv)
 
-sd_cols = {'Consent Number': 'permit_id', 'Well Number': 'station', 'Depth': 'station_depth', 'Bore Specific Rate as Proportion of Whole Take (L/s)': 'station_max_rate', 'q/Q Total\nNo Flow Restriction': 'sd_ratio'}
+sd_cols = {'Consent Number': 'permit_id', 'Well Number': 'wap', 'Depth': 'wap_depth', 'Bore Specific Rate as Proportion of Whole Take (L/s)': 'wap_max_rate', 'q/Q Total\nNo Flow Restriction': 'sd_ratio'}
 
 sd2 = sd1[list(sd_cols.keys())].dropna(subset=['Consent Number']).rename(columns=sd_cols).copy()
 
 sd2['permit_id'] = sd2['permit_id'].str.strip()
 
-numeric_cols = ['station_depth', 'station_max_rate', 'sd_ratio']
+numeric_cols = ['wap_depth', 'wap_max_rate', 'sd_ratio']
 
 for c in numeric_cols:
     sd2[c] = pd.to_numeric(sd2[c], errors='coerce')
@@ -173,24 +183,24 @@ print(missing_permits)
 ### Filtering
 permit5 = permit4[permit4.permit_id.isin(sites_df2.permit_id.unique())].copy()
 
-sd3 = sd2[sd2.permit_id.isin(permit5.permit_id.unique())].copy()
+sd3 = sd2[sd2.permit_id.isin(permit5.permit_id.unique())].groupby(['permit_id', 'wap']).first().reset_index().copy()
 
 ### Saving
 s3 = tu.s3_connection(conn_config)
 
-permit_key = base_key.format(name='es-permits')
+permit_key = base_key.format(name='take-permits')
 
 obj1 = permit5.to_csv(index=False)
 
 s3.put_object(Body=obj1, Bucket=bucket, Key=permit_key, ContentType='application/csv', Metadata={'run_date': run_date_key})
 
-sd_key = base_key.format(name='es-sd-ratios')
+sd_key = base_key.format(name='take-sd-ratios')
 
 obj1 = sd3.to_csv(index=False)
 
 s3.put_object(Body=obj1, Bucket=bucket, Key=sd_key, ContentType='application/csv', Metadata={'run_date': run_date_key})
 
-site_key = base_key.format(name='es-permits-stations')
+site_key = base_key.format(name='take-permits-waps')
 
 obj1 = sites_df2.to_csv(index=False)
 
