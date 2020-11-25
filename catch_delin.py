@@ -40,6 +40,8 @@ catch_gpkg = 'es_flow_sites_catchment_delin_2020-11-20.gpkg'
 
 pts_seg_shp = 'es_flow_sites_segments_2020-11-20.shp'
 
+stn_key_base = 'tethys/station_misc/{station_id}/catchment.geojson.zst'
+
 ##########################################
 ### Get the data
 
@@ -73,11 +75,32 @@ sites = sites1.to_crs(2193)
 rec_streams = rec_streams1.copy()
 rec_catch = rec_catch1.copy()
 
-rec_shed1, reaches, pts_seg = catch_delineate(sites, rec_streams, rec_catch, segment_id_col='nzsegment', from_node_col='FROM_NODE', to_node_col='TO_NODE', max_distance=1000, returns='all')
+rec_shed1, reaches, pts_seg = rec.catch_delineate(sites, rec_streams, rec_catch, segment_id_col='nzsegment', from_node_col='FROM_NODE', to_node_col='TO_NODE', max_distance=1000, returns='all')
 
+
+### Save data
 rec_shed1.to_file(os.path.join(file_path, catch_shp))
 rec_shed1.to_file(os.path.join(file_path, catch_gpkg), layer='es_flow_sites_catch_delin', driver="GPKG")
 
 pts_seg.to_file(os.path.join(file_path, pts_seg_shp))
+
+## To S3
+
+s3 = tu.s3_connection(conn_config)
+
+for i in rec_shed1.index:
+    data1 = rec_shed1.loc[[i]]
+    stn_id = data1.iloc[0].station_id
+    print(stn_id)
+
+    b1 = tu.write_json_zstd(data1._to_geo())
+
+    key1 = stn_key_base.format(station_id=stn_id)
+
+    s3.put_object(Key=key1, Body=b1, Bucket=bucket)
+
+
+
+
 
 
